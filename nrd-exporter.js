@@ -88,7 +88,7 @@
   #nrdx .warn{background:#fff4e0;border-color:#f0c77a}
   #nrdx details{margin-top:8px;font-size:11.5px;color:#5c6b7a}
   #nrdx .grp{background:#fff;border:1px solid #c5d7e8;border-radius:6px;padding:8px;margin-top:8px}
-  #nrdx .grp .gh,#nrdx .grp .gr{display:grid;grid-template-columns:58px 14px 58px 1fr 22px;gap:4px;align-items:center;font-size:12px}
+  #nrdx .grp .gh,#nrdx .grp .gr{display:grid;grid-template-columns:54px 16px 72px 1fr 20px;gap:4px;align-items:center;font-size:12px}
   #nrdx .grp .gh{color:#5c6b7a;font-weight:600;margin-bottom:3px}
   #nrdx .grp .gr{margin-bottom:3px}
   #nrdx .grp .gr input{width:100%;padding:3px 5px;border:1px solid #b8c3cf;border-radius:5px;font:inherit;background:#fffbe6;color:#1b2430}
@@ -137,7 +137,7 @@
     <label class="chk"><input type="checkbox" id="nrdx-ri" checked><span>Registered individuals at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-id" checked><span>Individual categories (needed to identify <b>Dealing Representatives</b>; slowest step)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-ld" checked><span>UDP and CCO at each firm</span></label>
-    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 40 minutes)</span></label>
+    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 50 minutes)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-oj" checked><span>Only provinces where the firm holds the selected category</span></label>
     <div class="box" id="nrdx-saved"></div>
     <div class="row">
