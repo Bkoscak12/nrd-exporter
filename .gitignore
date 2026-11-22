@@ -1,0 +1,6 @@
+# Data pulled from the NRD (names of registrants) stays on this Mac, never in GitHub.
+*.csv
+*.xlsx
+format-mockup.html
+tc-report-preview.html
+.DS_Store
