@@ -97,9 +97,9 @@
     <div class="box" style="display:block;margin:0 0 10px">
       <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
       <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
-      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, and how many people are registered at each. Faster: reads only the UDP and CCO records.</div>
+      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, and how many people are registered at each. For all EMDs, roughly 1½–2 hours (resumable).</div>
       <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
-      <div class="note" style="margin-top:4px">Everything, including exact dealing-rep counts and every condition. Reads everyone's record, so it takes hours (resumable).</div>
+      <div class="note" style="margin-top:4px">Everything above plus exact dealing-rep counts and every condition. Reads everyone's record: roughly 4 hours for all EMDs (resumable).</div>
     </div>
     <label><span class="lbl">Firm category</span><select id="nrdx-cat"><option>Exempt Market Dealer</option></select></label>
     <label><span class="lbl">Firm name contains (optional)</span><input type="text" id="nrdx-name" placeholder="e.g. Capital"></label>
@@ -465,7 +465,8 @@
       R.finished = !S.stop && S.errors === 0;
       await save(true);
       const took = fmtDur((Date.now() - t0) / 1000);
-      const summary = `${R.firms.length} firms, ${R.reps.size} firm/person records` + (R.indiv.size ? `, ${indivRows(true).length - 1} dealing-rep rows` : '');
+      const summary = `${R.firms.length} firms, ${R.reps.size} firm/person records` + (st.wantID && R.indiv.size ? `, ${indivRows(true).length - 1} dealing-rep rows` : '') +
+        (st.wantLead ? `, UDP/CCO found for ${leadership().size} firms` : '');
       if (S.stop) status(`Stopped after ${took} — ${summary}. Click Resume to continue.`);
       else if (S.errors) status(`Finished in ${took} with ${S.errors} failed lookups (see log) — ${summary}. Click Resume to retry them.`);
       else status(`Done in ${took} — ${summary}.`);
