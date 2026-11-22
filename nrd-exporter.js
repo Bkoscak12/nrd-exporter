@@ -100,12 +100,12 @@
     <div class="box" style="display:block;margin:0 0 10px">
       <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
       <div class="row"><button class="btn" data-a="sizescan">Firm size bands</button></div>
-      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 25 minutes.</div>
+      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 30 minutes (resumable).</div>
       <label style="margin:8px 0 0"><span class="lbl">Size bands (dealing reps)</span><input type="text" id="nrdx-bands"></label>
       <div class="note" id="nrdx-bandmsg" style="color:#b3261e;margin:0"></div>
       <div id="nrdx-bandtbl"></div>
       <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
-      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2 hours (resumable).</div>
+      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2–2½ hours (resumable).</div>
       <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
       <div class="note" style="margin-top:4px">Everything above plus exact dealing-rep counts and every condition. Reads everyone's record: roughly 4 hours for all EMDs (resumable).</div>
     </div>
@@ -119,7 +119,7 @@
     <label class="chk"><input type="checkbox" id="nrdx-ri" checked><span>Registered individuals at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-id" checked><span>Individual categories (needed to identify <b>Dealing Representatives</b>; slowest step)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-ld" checked><span>UDP and CCO at each firm</span></label>
-    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 25 minutes)</span></label>
+    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 30 minutes)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-oj" checked><span>Only provinces where the firm holds the selected category</span></label>
     <div class="box" id="nrdx-saved"></div>
     <div class="row">
@@ -281,11 +281,12 @@
   }
 
   // Every person nationwide in one individual category (e.g. every UDP), via the site's detailed search.
-  // With onPage, rows are handed over page by page instead of collected, and startAt resumes an
-  // interrupted search: the first page is always fetched as a real search, then it skips ahead.
-  async function searchIndivCategory(cat, { startAt = 0, onPage } = {}) {
+  // With onPage, rows are handed over page by page (in any order) instead of collected; pages for which
+  // isDone(offset) is true were handled before an interruption and are skipped. The first page is always
+  // fetched as a real search; the rest are its following pages, two in flight at a time at the shared pace.
+  async function searchIndivCategory(cat, { onPage, isDone = () => false } = {}) {
     const PAGE = 100, out = [];
-    for (let start = 0, draw = 1; ; draw++) {
+    const page = async (start, draw) => {
       if (S.stop) throw new Error('stopped');
       const model = { draw, columns: ['IndivName', 'FirmName'].map(col), order: [{ column: 0, dir: 'asc' }], start, length: PAGE, search: { value: '', regex: false } };
       const captchaEl = document.getElementById('hdfReCaptchaVerificationResponse');
@@ -296,13 +297,22 @@
         IsRecaptchaByPass: start > 0 };
       const d = (await postJSON('NrsSearch.aspx/DoIndivSearch', "{ 'model':" + JSON.stringify(model) + ",'nrsModel':" + JSON.stringify(nrs) + '}')).d || {};
       if (d.errorCode === 'RECAPTCHA_FAILED') { const e = new Error('CAPTCHA required'); e.captcha = true; throw e; }
-      const rows = d.data || [], skip = start === 0 && startAt > 0, total = d.recordsTotal || 0;
-      const next = skip ? startAt : start + PAGE;
-      if (onPage) await onPage(skip ? [] : rows, next, total); else out.push(...rows);
-      status(`Searching every ${cat}: ${Math.min(next, total).toLocaleString()} / ${total.toLocaleString()}`);
-      if (!rows.length || (!skip && rows.length < PAGE) || next >= total) break;
-      start = next;
-    }
+      return { rows: d.data || [], total: d.recordsTotal || 0 };
+    };
+    const first = await page(0, 1), total = first.total;
+    const take = async (start, rows) => { if (onPage) await onPage(rows, start, total); else out.push(...rows); };
+    if (!isDone(0)) await take(0, first.rows);
+    const todo = [];
+    for (let start = PAGE; start < total; start += PAGE) if (!isDone(start)) todo.push(start);
+    let i = 0, done = Math.ceil(total / PAGE) - todo.length;
+    const worker = async () => {
+      while (i < todo.length) {
+        const start = todo[i++], r = await page(start, 2 + start / PAGE);
+        await take(start, r.rows); done++;
+        status(`Searching every ${cat}: page ${done.toLocaleString()} of ${Math.ceil(total / PAGE).toLocaleString()}`);
+      }
+    };
+    await Promise.all([worker(), worker()]);
     return out;
   }
 
@@ -416,7 +426,7 @@
       // site's own search). Firms that are also mutual fund or investment dealers get flagged, because
       // their count includes those reps too.
       if (st.wantSize && !S.stop && !(R.size && R.size.done)) {
-        R.size = R.size || { counts: {}, next: 0, total: 0, otherDealers: null, done: false };
+        R.size = R.size || { counts: {}, pages: [], total: 0, otherDealers: null, done: false };
         if (!R.size.otherDealers) {
           log('Listing mutual fund and investment dealers, to flag counts that include their reps');
           const other = {};
@@ -424,12 +434,15 @@
             for (const f of await searchFirms({ cat: c, name: '', jurs: [], max: 0 })) (other[normName(f.FirmName)] = other[normName(f.FirmName)] || []).push(c);
           R.size.otherDealers = other; await save(true);
         }
-        log(`Counting dealing representatives at every firm${R.size.next ? ' (resuming)' : ''}`);
-        await searchIndivCategory('Dealing Representative', { startAt: R.size.next, onPage: (rows, next, total) => {
+        // A count saved by an earlier version can't be resumed page by page: start that count over.
+        if (!R.size.pages) { R.size.counts = {}; R.size.pages = []; }
+        const pagesDone = new Set(R.size.pages);
+        log(`Counting dealing representatives at every firm${pagesDone.size ? ' (resuming)' : ''}`);
+        await searchIndivCategory('Dealing Representative', { isDone: o => pagesDone.has(o), onPage: (rows, offset, total) => {
           for (const p of rows) for (const n of String(p.FirmName || '').split('|')) {
             const k = normName(n); if (k) R.size.counts[k] = (R.size.counts[k] || 0) + 1;
           }
-          R.size.next = next; R.size.total = total; save();
+          pagesDone.add(offset); R.size.pages.push(offset); R.size.total = total; save();
         } });
         R.size.done = true; await save(true);
         log('Firm sizes counted'); refreshButtons(); renderBands();
