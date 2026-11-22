@@ -87,6 +87,9 @@
   #nrdx .box{background:#eef4fa;border:1px solid #c5d7e8;padding:7px 9px;border-radius:6px;font-size:12px;margin-top:8px;display:none}
   #nrdx .warn{background:#fff4e0;border-color:#f0c77a}
   #nrdx details{margin-top:8px;font-size:11.5px;color:#5c6b7a}
+  #nrdx #nrdx-bandtbl table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+  #nrdx #nrdx-bandtbl td{padding:2px 6px;border-top:1px solid #e1e6ec}
+  #nrdx #nrdx-bandtbl td+td{text-align:right}
   #nrdx pre{white-space:pre-wrap;max-height:120px;overflow:auto;margin:4px 0 0;font-size:11px}`;
   const style = document.createElement('style'); style.textContent = css; document.head.appendChild(style);
 
@@ -96,8 +99,13 @@
   <div class="bd">
     <div class="box" style="display:block;margin:0 0 10px">
       <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
+      <div class="row"><button class="btn" data-a="sizescan">Firm size bands</button></div>
+      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 25 minutes.</div>
+      <label style="margin:8px 0 0"><span class="lbl">Size bands (dealing reps)</span><input type="text" id="nrdx-bands"></label>
+      <div class="note" id="nrdx-bandmsg" style="color:#b3261e;margin:0"></div>
+      <div id="nrdx-bandtbl"></div>
       <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
-      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, and how many people are registered at each. For all EMDs, roughly 1½–2 hours (resumable).</div>
+      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2 hours (resumable).</div>
       <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
       <div class="note" style="margin-top:4px">Everything above plus exact dealing-rep counts and every condition. Reads everyone's record: roughly 4 hours for all EMDs (resumable).</div>
     </div>
@@ -111,6 +119,7 @@
     <label class="chk"><input type="checkbox" id="nrdx-ri" checked><span>Registered individuals at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-id" checked><span>Individual categories (needed to identify <b>Dealing Representatives</b>; slowest step)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-ld" checked><span>UDP and CCO at each firm</span></label>
+    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 25 minutes)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-oj" checked><span>Only provinces where the firm holds the selected category</span></label>
     <div class="box" id="nrdx-saved"></div>
     <div class="row">
@@ -164,7 +173,7 @@
     $('#nrdx-cat').value = s.cat; $('#nrdx-name').value = s.name; $('#nrdx-max').value = s.max;
     box.querySelectorAll('.jur input').forEach(i => { i.checked = s.jurs.includes(i.value); });
     $('#nrdx-fd').checked = s.wantFD; $('#nrdx-ri').checked = s.wantRI; $('#nrdx-id').checked = s.wantID; $('#nrdx-oj').checked = s.onlyCatJur;
-    $('#nrdx-ld').checked = !!s.wantLead;
+    $('#nrdx-ld').checked = !!s.wantLead; $('#nrdx-sz').checked = !!s.wantSize;
   }
   function readSettings() {
     return {
@@ -172,7 +181,7 @@
       jurs: [...box.querySelectorAll('.jur input:checked')].map(i => i.value),
       max: parseInt($('#nrdx-max').value, 10) || 0,
       wantFD: $('#nrdx-fd').checked, wantRI: $('#nrdx-ri').checked,
-      wantID: $('#nrdx-id').checked && $('#nrdx-ri').checked, onlyCatJur: $('#nrdx-oj').checked, wantLead: $('#nrdx-ld').checked,
+      wantID: $('#nrdx-id').checked && $('#nrdx-ri').checked, onlyCatJur: $('#nrdx-oj').checked, wantLead: $('#nrdx-ld').checked, wantSize: $('#nrdx-sz').checked,
     };
   }
 
@@ -272,9 +281,11 @@
   }
 
   // Every person nationwide in one individual category (e.g. every UDP), via the site's detailed search.
-  async function searchIndivCategory(cat) {
+  // With onPage, rows are handed over page by page instead of collected, and startAt resumes an
+  // interrupted search: the first page is always fetched as a real search, then it skips ahead.
+  async function searchIndivCategory(cat, { startAt = 0, onPage } = {}) {
     const PAGE = 100, out = [];
-    for (let start = 0, draw = 1; ; start += PAGE, draw++) {
+    for (let start = 0, draw = 1; ; draw++) {
       if (S.stop) throw new Error('stopped');
       const model = { draw, columns: ['IndivName', 'FirmName'].map(col), order: [{ column: 0, dir: 'asc' }], start, length: PAGE, search: { value: '', regex: false } };
       const captchaEl = document.getElementById('hdfReCaptchaVerificationResponse');
@@ -285,9 +296,12 @@
         IsRecaptchaByPass: start > 0 };
       const d = (await postJSON('NrsSearch.aspx/DoIndivSearch', "{ 'model':" + JSON.stringify(model) + ",'nrsModel':" + JSON.stringify(nrs) + '}')).d || {};
       if (d.errorCode === 'RECAPTCHA_FAILED') { const e = new Error('CAPTCHA required'); e.captcha = true; throw e; }
-      out.push(...(d.data || []));
-      status(`Searching every ${cat}: ${out.length} / ${d.recordsTotal}`);
-      if (!d.data || d.data.length < PAGE || out.length >= d.recordsTotal) break;
+      const rows = d.data || [], skip = start === 0 && startAt > 0, total = d.recordsTotal || 0;
+      const next = skip ? startAt : start + PAGE;
+      if (onPage) await onPage(skip ? [] : rows, next, total); else out.push(...rows);
+      status(`Searching every ${cat}: ${Math.min(next, total).toLocaleString()} / ${total.toLocaleString()}`);
+      if (!rows.length || (!skip && rows.length < PAGE) || next >= total) break;
+      start = next;
     }
     return out;
   }
@@ -398,6 +412,29 @@
       }
       refreshButtons();
 
+      // Fast firm size: count every dealing representative in Canada by firm (about 1,200 pages of the
+      // site's own search). Firms that are also mutual fund or investment dealers get flagged, because
+      // their count includes those reps too.
+      if (st.wantSize && !S.stop && !(R.size && R.size.done)) {
+        R.size = R.size || { counts: {}, next: 0, total: 0, otherDealers: null, done: false };
+        if (!R.size.otherDealers) {
+          log('Listing mutual fund and investment dealers, to flag counts that include their reps');
+          const other = {};
+          for (const c of OTHER_DEALER_CATS)
+            for (const f of await searchFirms({ cat: c, name: '', jurs: [], max: 0 })) (other[normName(f.FirmName)] = other[normName(f.FirmName)] || []).push(c);
+          R.size.otherDealers = other; await save(true);
+        }
+        log(`Counting dealing representatives at every firm${R.size.next ? ' (resuming)' : ''}`);
+        await searchIndivCategory('Dealing Representative', { startAt: R.size.next, onPage: (rows, next, total) => {
+          for (const p of rows) for (const n of String(p.FirmName || '').split('|')) {
+            const k = normName(n); if (k) R.size.counts[k] = (R.size.counts[k] || 0) + 1;
+          }
+          R.size.next = next; R.size.total = total; save();
+        } });
+        R.size.done = true; await save(true);
+        log('Firm sizes counted'); refreshButtons(); renderBands();
+      }
+
       if ((st.wantFD || st.wantRI) && !S.stop) {
         const todo = R.firms.filter(f => !f.parsed);
         if (todo.length) log(`Reading ${todo.length} firm pages`);
@@ -466,7 +503,7 @@
       await save(true);
       const took = fmtDur((Date.now() - t0) / 1000);
       const summary = `${R.firms.length} firms, ${R.reps.size} firm/person records` + (st.wantID && R.indiv.size ? `, ${indivRows(true).length - 1} dealing-rep rows` : '') +
-        (st.wantLead ? `, UDP/CCO found for ${leadership().size} firms` : '');
+        (st.wantLead ? `, UDP/CCO found for ${leadership().size} firms` : '') + (R.size && R.size.done ? ', firm sizes counted' : '');
       if (S.stop) status(`Stopped after ${took} — ${summary}. Click Resume to continue.`);
       else if (S.errors) status(`Finished in ${took} with ${S.errors} failed lookups (see log) — ${summary}. Click Resume to retry them.`);
       else status(`Done in ${took} — ${summary}.`);
@@ -675,6 +712,65 @@
     return rows;
   }
 
+  // ---------- firm size bands ----------
+  const OTHER_DEALER_CATS = ['Investment Dealer', 'Mutual Fund Dealer', 'Scholarship Plan Dealer', 'Restricted Dealer'];
+  const normName = s => clean(s).toLowerCase();
+  const DEFAULT_BANDS = '0, 1-3, 4-6, 7-12, 13-25, 26-50, 51-100, 101+';
+  // "0, 1-3, 101+" -> [{label, lo, hi}], sorted and checked for overlaps.
+  function parseBands(text) {
+    const out = [];
+    for (const t of text.split(',').map(x => x.trim()).filter(Boolean)) {
+      let m;
+      if ((m = t.match(/^(\d+)$/))) out.push({ label: m[1], lo: +m[1], hi: +m[1] });
+      else if ((m = t.match(/^(\d+)\s*-\s*(\d+)$/)) && +m[1] <= +m[2]) out.push({ label: `${m[1]}-${m[2]}`, lo: +m[1], hi: +m[2] });
+      else if ((m = t.match(/^(\d+)\s*\+$/))) out.push({ label: `${m[1]}+`, lo: +m[1], hi: Infinity });
+      else throw new Error(`"${t}" isn't a band. Use forms like 0, 1-3 or 101+.`);
+    }
+    if (!out.length) throw new Error('Enter at least one band.');
+    out.sort((a, b) => a.lo - b.lo);
+    for (let i = 1; i < out.length; i++) if (out[i].lo <= out[i - 1].hi) throw new Error(`Bands ${out[i - 1].label} and ${out[i].label} overlap.`);
+    return out;
+  }
+  function bands() { try { return parseBands($('#nrdx-bands').value); } catch { return parseBands(DEFAULT_BANDS); } }
+  const bandOf = (n, bs) => (bs.find(b => n >= b.lo && n <= b.hi) || { label: 'Not in any band' }).label;
+  // Dealing reps per firm: the exact EMD count from a full scan where available, otherwise the fast count.
+  function sizeTable() {
+    const out = new Map(), exact = R.settings.wantID ? firmSize() : new Map(), cat = R.settings.cat;
+    for (const f of R.firms) {
+      const s = exact.get(f.FirmId), other = R.size && R.size.otherDealers ? R.size.otherDealers[normName(f.FirmName)] || [] : [];
+      if (s && s.read === s.people) out.set(f.FirmId, { n: s.dr, how: `Exact ${cat} dealing reps (full scan)`, other });
+      else if (R.size && R.size.done) out.set(f.FirmId, { n: R.size.counts[normName(f.FirmName)] || 0,
+        how: other.length ? 'All dealer types (fast count), includes ' + other.join(' / ') + ' reps' : 'Fast count', other });
+    }
+    return out;
+  }
+  function sizeBandRows() {
+    const bs = bands(), t = sizeTable(), counts = new Map(bs.map(b => [b.label, { n: 0, other: 0 }]));
+    for (const f of R.firms) { const s = t.get(f.FirmId); if (!s) continue;
+      const c = counts.get(bandOf(s.n, bs)) || counts.set(bandOf(s.n, bs), { n: 0, other: 0 }).get(bandOf(s.n, bs));
+      c.n++; if (s.other.length) c.other++; }
+    const total = [...counts.values()].reduce((a, c) => a + c.n, 0);
+    return [['Size band (dealing reps)', `${R.settings.cat}s`, '% of firms', 'Of which also a mutual fund / investment dealer'],
+      ...[...counts].map(([label, c]) => [label, c.n, total ? Math.round(1000 * c.n / total) / 10 + '%' : '', c.other]),
+      ['Total', total, total ? '100%' : '', [...counts.values()].reduce((a, c) => a + c.other, 0)], [''],
+      ['Counts for firms that are also mutual fund or investment dealers include those reps. A full scan gives their exact EMD-only count.']];
+  }
+  function firmSizeRows() {
+    const bs = bands(), t = sizeTable();
+    const rows = R.firms.filter(f => t.has(f.FirmId)).map(f => { const s = t.get(f.FirmId);
+      return [num(f.NRDNumber), f.FirmName, s.n, bandOf(s.n, bs), s.how, s.other.join('; '), clean(f.Jurisdictions), { link: firmUrl(f.FirmId) }]; });
+    rows.sort((a, b) => b[2] - a[2] || a[1].localeCompare(b[1]));
+    return [['NRD #', 'Firm name', 'Dealing reps', 'Size band', 'How counted', 'Also registered as', 'Provinces registered', 'NRD record'], ...rows];
+  }
+  // Small band table in the panel; redrawn when the bands change.
+  function renderBands() {
+    const el = $('#nrdx-bandtbl'), msg = $('#nrdx-bandmsg');
+    try { parseBands($('#nrdx-bands').value); msg.textContent = ''; } catch (e) { msg.textContent = e.message; }
+    if (!R || !sizeTable().size) { el.innerHTML = ''; return; }
+    const rows = sizeBandRows().slice(1, -2);
+    el.innerHTML = '<table>' + rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('') + '</table>';
+  }
+
   // ---------- leadership & firm size ----------
   // Per firm: UDP(s), CCO(s) for the selected category, CCOs for the firm's other categories, and
   // firm size, all from the individual records read so far.
@@ -712,10 +808,10 @@
   }
   const since = p => p.dates.slice().sort()[0];
   function leadershipRows() {
-    const cat = R.settings.cat, lc = cat.toLowerCase(), L = leadership(), size = firmSize(), known = leadKnown();
+    const cat = R.settings.cat, lc = cat.toLowerCase(), L = leadership(), size = firmSize(), known = leadKnown(), st = sizeTable(), bs = bands();
     const people = m => [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
     const rows = [['NRD #', 'Firm name', `${cat} provinces`, 'Head office city', 'Head office province', 'Registered individuals',
-      `${cat} dealing reps`, 'Ultimate Designated Person', 'UDP provinces', 'UDP since', 'UDP NRD record',
+      'Dealing reps', 'Size band', 'How counted', 'Ultimate Designated Person', 'UDP provinces', 'UDP since', 'UDP NRD record',
       `Chief Compliance Officer (${cat})`, 'CCO provinces', 'CCO since', 'CCO NRD record', 'UDP is also CCO',
       'CCO for other categories', 'Firm terms & conditions', 'On Disciplined List', 'NRD record']];
     for (const f of R.firms) {
@@ -727,8 +823,8 @@
         f.parsed ? f.juris.filter(j => j.cats.some(k => k.cat.toLowerCase() === lc)).map(jc).join('; ') : '',
         a.city || '', a.prov || '',
         s ? s.people : (R.settings.wantRI ? 0 : ''),
-        // Exact only once every listed person at the firm has been read.
-        s && s.read === s.people ? s.dr : '',
+        // Exact (full scan) where available, otherwise the fast count.
+        st.has(f.FirmId) ? st.get(f.FirmId).n : '', st.has(f.FirmId) ? bandOf(st.get(f.FirmId).n, bs) : '', st.has(f.FirmId) ? st.get(f.FirmId).how : '',
         u.length ? u.map(p => p.name).join('; ') : none, u.map(p => p.provs.join(', ')).join(' | '),
         u.length && since(u[0]) ? { date: since(u[0]) } : '', u.length ? { link: indUrl(u[0].id) } : '',
         c.length ? c.map(p => p.name).join('; ') : none, c.map(p => p.provs.join(', ')).join(' | '),
@@ -765,6 +861,7 @@
       ['Status', R.finished ? 'Complete' : 'Partial – run not finished'],
       ['Firms', R.firms.length], ['Firm/person records', R.reps.size], ['Individuals checked', R.indiv.size],
       ['Collected', [s.wantFD && 'firm details', s.wantRI && 'registered individuals', s.wantID && 'individual categories & terms', s.wantLead && 'UDP and CCO'].filter(Boolean).join(', ')],
+      ['Size bands', bands().map(b => b.label).join(', ')],
       ['Firm size', '"Registered individuals" counts everyone listed at the firm in the provinces scanned. The dealing-rep count is filled in once every person at the firm has been read (full scan).'],
       ['Dates', 'NRD registration history starts Sep 28, 2009. A "*" date (flagged in Firm Registrations) means registered on or before that date.'],
       ['Note', 'The CSA presents registration information as a plain language summary of publicly available documents. Check the NRD record before relying on it.']];
@@ -862,6 +959,7 @@
   async function excel() {
     status('Building Excel file…');
     const sheets = [];
+    if (sizeTable().size) sheets.push({ name: 'Size Bands', rows: sizeBandRows(), noFilter: true }, { name: 'Firm Sizes', rows: firmSizeRows() });
     if (leadKnown() || R.reps.size) sheets.push({ name: 'Leadership & Size', rows: leadershipRows() });
     if (leadership().size) sheets.push({ name: 'Leadership People', rows: leadershipPeopleRows() });
     sheets.push({ name: 'Firms', rows: firmRows() });
@@ -988,14 +1086,23 @@ draw();
     const a = e.target.closest('[data-a]'); if (!a) return;
     ({ hide: () => { box.style.display = 'none'; }, start: () => run(false), resume: () => run(true),
       stop: () => { S.stop = true; status('Stopping…'); },
-      tcscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-id', '#nrdx-ld', '#nrdx-oj'].forEach(id => { $(id).checked = true; $(id).disabled = false; }); run(false); },
-      leadscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-ld', '#nrdx-oj'].forEach(id => { $(id).checked = true; }); $('#nrdx-id').checked = false; run(false); },
+      tcscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-id', '#nrdx-ld', '#nrdx-oj'].forEach(id => { $(id).checked = true; $(id).disabled = false; });
+        $('#nrdx-sz').checked = false; run(false); },
+      leadscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-ld', '#nrdx-oj', '#nrdx-sz'].forEach(id => { $(id).checked = true; }); $('#nrdx-id').checked = false; run(false); },
+      sizescan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-id', '#nrdx-ld'].forEach(id => { $(id).checked = false; }); $('#nrdx-sz').checked = true; run(false); },
       report: () => openReport(false), savereport: () => openReport(true),
       xlsx: () => excel().catch(err => { status('Excel export failed: ' + err.message); log(err.stack || err.message); }),
       firms: () => csv(firmRows(), 'firms'), reps: () => csv(indivRows(false), 'individuals'),
       drs: () => csv(indivRows(true), 'dealing-reps'), terms: () => csv(termsRows(), 'terms-and-conditions') })[a.dataset.a]();
   });
   $('#nrdx-ri').addEventListener('change', e => { $('#nrdx-id').disabled = !e.target.checked; });
+
+  // Size bands: remembered in this browser; the panel table re-groups as you type.
+  try { $('#nrdx-bands').value = localStorage.getItem('nrdx-bands') || DEFAULT_BANDS; } catch { $('#nrdx-bands').value = DEFAULT_BANDS; }
+  $('#nrdx-bands').addEventListener('input', () => {
+    try { parseBands($('#nrdx-bands').value); localStorage.setItem('nrdx-bands', $('#nrdx-bands').value); } catch {}
+    renderBands();
+  });
 
   // Load the site's live category list for firms, then any saved run.
   postJSON('NrsSearch.aspx/GetCategories', "{'firmOrIndiv':'F','selJurisdictionsList':''}").then(j => {
@@ -1005,7 +1112,7 @@ draw();
     if (!saved || S.running) return;
     R = saved; applySettings(R.settings);
     if (!R.finished) status('Found an unfinished run — click Resume to continue it.');
-    showSaved(); refreshButtons();
+    showSaved(); refreshButtons(); renderBands();
   }).catch(e => log('Could not read saved progress: ' + e.message));
 
   window.__nrdx = { show: () => { box.style.display = ''; }, state: S, get run() { return R; } };
