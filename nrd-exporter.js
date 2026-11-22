@@ -95,8 +95,11 @@
   <header><b>NRD Exporter</b><button title="Hide" data-a="hide">×</button></header>
   <div class="bd">
     <div class="box" style="display:block;margin:0 0 10px">
-      <b>Terms &amp; conditions scan</b><br>Every firm in the category below and everyone registered at them, so you can group conditions by category and province. Tick provinces to narrow it.
-      <div class="row"><button class="btn" data-a="tcscan">Scan for terms &amp; conditions</button></div>
+      <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
+      <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
+      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, and how many people are registered at each. Faster: reads only the UDP and CCO records.</div>
+      <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
+      <div class="note" style="margin-top:4px">Everything, including exact dealing-rep counts and every condition. Reads everyone's record, so it takes hours (resumable).</div>
     </div>
     <label><span class="lbl">Firm category</span><select id="nrdx-cat"><option>Exempt Market Dealer</option></select></label>
     <label><span class="lbl">Firm name contains (optional)</span><input type="text" id="nrdx-name" placeholder="e.g. Capital"></label>
@@ -107,6 +110,7 @@
     <label class="chk"><input type="checkbox" id="nrdx-fd" checked><span>Firm details (head office, phone, categories by province)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-ri" checked><span>Registered individuals at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-id" checked><span>Individual categories (needed to identify <b>Dealing Representatives</b>; slowest step)</span></label>
+    <label class="chk"><input type="checkbox" id="nrdx-ld" checked><span>UDP and CCO at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-oj" checked><span>Only provinces where the firm holds the selected category</span></label>
     <div class="box" id="nrdx-saved"></div>
     <div class="row">
@@ -160,6 +164,7 @@
     $('#nrdx-cat').value = s.cat; $('#nrdx-name').value = s.name; $('#nrdx-max').value = s.max;
     box.querySelectorAll('.jur input').forEach(i => { i.checked = s.jurs.includes(i.value); });
     $('#nrdx-fd').checked = s.wantFD; $('#nrdx-ri').checked = s.wantRI; $('#nrdx-id').checked = s.wantID; $('#nrdx-oj').checked = s.onlyCatJur;
+    $('#nrdx-ld').checked = !!s.wantLead;
   }
   function readSettings() {
     return {
@@ -167,7 +172,7 @@
       jurs: [...box.querySelectorAll('.jur input:checked')].map(i => i.value),
       max: parseInt($('#nrdx-max').value, 10) || 0,
       wantFD: $('#nrdx-fd').checked, wantRI: $('#nrdx-ri').checked,
-      wantID: $('#nrdx-id').checked && $('#nrdx-ri').checked, onlyCatJur: $('#nrdx-oj').checked,
+      wantID: $('#nrdx-id').checked && $('#nrdx-ri').checked, onlyCatJur: $('#nrdx-oj').checked, wantLead: $('#nrdx-ld').checked,
     };
   }
 
@@ -261,6 +266,27 @@
       out.push(...(d.data || []));
       status(`Firm list: ${out.length} / ${d.recordsTotal}`);
       if (max && out.length >= max) return out.slice(0, max);
+      if (!d.data || d.data.length < PAGE || out.length >= d.recordsTotal) break;
+    }
+    return out;
+  }
+
+  // Every person nationwide in one individual category (e.g. every UDP), via the site's detailed search.
+  async function searchIndivCategory(cat) {
+    const PAGE = 100, out = [];
+    for (let start = 0, draw = 1; ; start += PAGE, draw++) {
+      if (S.stop) throw new Error('stopped');
+      const model = { draw, columns: ['IndivName', 'FirmName'].map(col), order: [{ column: 0, dir: 'asc' }], start, length: PAGE, search: { value: '', regex: false } };
+      const captchaEl = document.getElementById('hdfReCaptchaVerificationResponse');
+      const nrs = { SearchType: 'I', SearchUrl: `?searchBy=I&indivNm=&isDet=true&ctgry=${encodeURIComponent(cat)}&pgStart=${start}&pgLen=${PAGE}`,
+        IndivName: '', FirmName: '', IsDetailedSearch: true, RecaptchaResponse: captchaEl ? captchaEl.value : '', IsShowHistory: false,
+        RelatedFirmName: '', SelectedJurisdictions: '', SelectedCategories: cat + '|',
+        // Same as the site's own pager: only page 2+ of a search skips the CAPTCHA check.
+        IsRecaptchaByPass: start > 0 };
+      const d = (await postJSON('NrsSearch.aspx/DoIndivSearch', "{ 'model':" + JSON.stringify(model) + ",'nrsModel':" + JSON.stringify(nrs) + '}')).d || {};
+      if (d.errorCode === 'RECAPTCHA_FAILED') { const e = new Error('CAPTCHA required'); e.captcha = true; throw e; }
+      out.push(...(d.data || []));
+      status(`Searching every ${cat}: ${out.length} / ${d.recordsTotal}`);
       if (!d.data || d.data.length < PAGE || out.length >= d.recordsTotal) break;
     }
     return out;
@@ -412,6 +438,28 @@
           R.indiv.set(id, parseIndiv(await getDoc(`NRSIndivRegistrationRecord.aspx?indivId=${encodeURIComponent(id)}&isDet=true`)));
           if (S.done % 25 === 0) refreshButtons();
         });
+      }
+
+      // UDP and CCO without reading everyone's record: two nationwide category searches, then only
+      // those people's records at these firms (a full scan reads everyone, so it needs neither).
+      if (st.wantLead && !st.wantID && !S.stop) {
+        if (!R.leadSearch) {
+          log('Searching the NRD for every UDP and CCO');
+          const udp = await searchIndivCategory('Ultimate Designated Person');
+          const cco = await searchIndivCategory('Chief Compliance Officer');
+          R.leadSearch = { udp, cco }; await save(true);
+        }
+        const norm = s => clean(s).toLowerCase();
+        const names = new Set(R.firms.map(f => norm(f.FirmName)));
+        const ids = new Set();
+        for (const p of [...R.leadSearch.udp, ...R.leadSearch.cco])
+          if (String(p.FirmName || '').split('|').some(n => names.has(norm(n)))) ids.add(p.IndivId);
+        const todo = [...ids].filter(id => !R.indiv.has(id));
+        if (todo.length) log(`Reading ${todo.length} UDP and CCO records at these firms`);
+        await pool(todo, 'UDP and CCO records', async id => {
+          R.indiv.set(id, parseIndiv(await getDoc(`NRSIndivRegistrationRecord.aspx?indivId=${encodeURIComponent(id)}&isDet=true`)));
+        });
+        refreshButtons();
       }
 
       R.finished = !S.stop && S.errors === 0;
@@ -618,9 +666,94 @@
     };
     block(`Firms with conditions (of ${R.firms.filter(f => f.parsed).length} firms checked)`, c => c.w === 'Firm');
     const checked = [...R.reps.values()].filter(r => R.indiv.has(r.individualId)), drs = checked.filter(r => repInfo(r).dr.length);
-    block(`Dealing reps with conditions (of ${drs.length} dealing reps checked)`, c => c.w === 'Individual' && c.dr === 'Yes');
-    block(`All registrants with conditions (of ${checked.length} people checked)`, c => c.w === 'Individual');
+    if (R.settings.wantID) {
+      block(`Dealing reps with conditions (of ${drs.length} dealing reps checked)`, c => c.w === 'Individual' && c.dr === 'Yes');
+      block(`All registrants with conditions (of ${checked.length} people checked)`, c => c.w === 'Individual');
+    } else rows.push(['Run the full scan to see conditions on dealing reps and other registrants.'], ['']);
     rows.push(['One firm or person can appear under several categories, so category rows do not add up to "Any condition".']);
+    return rows;
+  }
+
+  // ---------- leadership & firm size ----------
+  // Per firm: UDP(s), CCO(s) for the selected category, CCOs for the firm's other categories, and
+  // firm size, all from the individual records read so far.
+  function leadership() {
+    const cat = R.settings.cat.toLowerCase(), names = new Map(), out = new Map();
+    for (const p of [...((R.leadSearch || {}).udp || []), ...((R.leadSearch || {}).cco || [])]) names.set(p.IndivId, p.IndivName);
+    for (const r of R.reps.values()) names.set(r.individualId, r.name);
+    const firmIds = new Set(R.firms.map(f => String(f.FirmId)));
+    for (const [id, info] of R.indiv) for (const reg of info.regs) {
+      if (!firmIds.has(String(reg.firmId))) continue;
+      const L = out.get(String(reg.firmId)) || { udp: new Map(), cco: new Map(), ccoOther: new Map() };
+      for (const [j, cats] of Object.entries(reg.juris)) for (const k of cats) {
+        const m = k.cat.match(/^Chief Compliance Officer(?: \((.+)\))?$/i);
+        const role = /^Ultimate Designated Person/i.test(k.cat) ? 'udp' : m ? (!m[1] || m[1].toLowerCase() === cat ? 'cco' : 'ccoOther') : null;
+        if (!role) continue;
+        const p = L[role].get(id) || { id, name: names.get(id) || '', provs: [], dates: [], label: m && m[1] ? m[1] : '' };
+        if (!p.provs.includes(jcode(j))) p.provs.push(jcode(j));
+        const d = isoDate(k.from); if (d) p.dates.push(d);
+        L[role].set(id, p);
+      }
+      out.set(String(reg.firmId), L);
+    }
+    return out;
+  }
+  const leadKnown = () => !!R.leadSearch || (R.settings.wantID && R.indiv.size > 0);
+  function firmSize() {
+    const size = new Map();
+    for (const rec of R.reps.values()) {
+      const s = size.get(rec.firm.FirmId) || { people: 0, read: 0, dr: 0 };
+      s.people++;
+      if (R.indiv.has(rec.individualId)) { s.read++; if (repInfo(rec).dr.length) s.dr++; }
+      size.set(rec.firm.FirmId, s);
+    }
+    return size;
+  }
+  const since = p => p.dates.slice().sort()[0];
+  function leadershipRows() {
+    const cat = R.settings.cat, lc = cat.toLowerCase(), L = leadership(), size = firmSize(), known = leadKnown();
+    const people = m => [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const rows = [['NRD #', 'Firm name', `${cat} provinces`, 'Head office city', 'Head office province', 'Registered individuals',
+      `${cat} dealing reps`, 'Ultimate Designated Person', 'UDP provinces', 'UDP since', 'UDP NRD record',
+      `Chief Compliance Officer (${cat})`, 'CCO provinces', 'CCO since', 'CCO NRD record', 'UDP is also CCO',
+      'CCO for other categories', 'Firm terms & conditions', 'On Disciplined List', 'NRD record']];
+    for (const f of R.firms) {
+      const l = L.get(String(f.FirmId)) || { udp: new Map(), cco: new Map(), ccoOther: new Map() };
+      const u = people(l.udp), c = people(l.cco), s = size.get(f.FirmId), a = f.addr || {};
+      const none = known ? 'None listed' : '';
+      const nTerms = f.juris.reduce((n, j) => n + (j.terms || []).length, 0);
+      rows.push([num(f.NRDNumber), f.FirmName,
+        f.parsed ? f.juris.filter(j => j.cats.some(k => k.cat.toLowerCase() === lc)).map(jc).join('; ') : '',
+        a.city || '', a.prov || '',
+        s ? s.people : (R.settings.wantRI ? 0 : ''),
+        // Exact only once every listed person at the firm has been read.
+        s && s.read === s.people ? s.dr : '',
+        u.length ? u.map(p => p.name).join('; ') : none, u.map(p => p.provs.join(', ')).join(' | '),
+        u.length && since(u[0]) ? { date: since(u[0]) } : '', u.length ? { link: indUrl(u[0].id) } : '',
+        c.length ? c.map(p => p.name).join('; ') : none, c.map(p => p.provs.join(', ')).join(' | '),
+        c.length && since(c[0]) ? { date: since(c[0]) } : '', c.length ? { link: indUrl(c[0].id) } : '',
+        u.length && c.length ? (u.some(p => l.cco.has(p.id)) ? 'Yes' : 'No') : '',
+        people(l.ccoOther).map(p => `${p.name} (${p.label})`).join('; '),
+        !f.parsed ? '' : nTerms ? `${nTerms} (see Terms & Conditions)` : 'None',
+        f.parsed ? (f.disciplined ? 'Yes' : 'No') : '', { link: firmUrl(f.FirmId) }]);
+    }
+    return rows;
+  }
+  // One row per firm, role and person, with a link for every person.
+  function leadershipPeopleRows() {
+    const cat = R.settings.cat, L = leadership();
+    const rows = [['Firm NRD #', 'Firm name', 'Role', 'Name', 'Individual ID', 'Provinces', 'Since', `Also ${cat} dealing rep`, 'NRD record']];
+    for (const f of R.firms) {
+      const l = L.get(String(f.FirmId)); if (!l) continue;
+      const add = (role, p) => {
+        const reg = (R.indiv.get(p.id) || { regs: [] }).regs.find(r => String(r.firmId) === String(f.FirmId));
+        const dr = reg ? Object.values(reg.juris).some(cs => cs.some(k => k.cat.toLowerCase() === `dealing representative (${cat.toLowerCase()})`)) : false;
+        rows.push([num(f.NRDNumber), f.FirmName, role, p.name, num(p.id), p.provs.join('; '), since(p) ? { date: since(p) } : '', dr ? 'Yes' : 'No', { link: indUrl(p.id) }]);
+      };
+      for (const p of l.udp.values()) add('Ultimate Designated Person', p);
+      for (const p of l.cco.values()) add(`Chief Compliance Officer (${cat})`, p);
+      for (const p of l.ccoOther.values()) add(`Chief Compliance Officer (${p.label})`, p);
+    }
     return rows;
   }
 
@@ -630,7 +763,8 @@
       ['Downloaded', new Date().toLocaleString()], ['Search', describe(R)],
       ['Status', R.finished ? 'Complete' : 'Partial – run not finished'],
       ['Firms', R.firms.length], ['Firm/person records', R.reps.size], ['Individuals checked', R.indiv.size],
-      ['Collected', [s.wantFD && 'firm details', s.wantRI && 'registered individuals', s.wantID && 'individual categories & terms'].filter(Boolean).join(', ')],
+      ['Collected', [s.wantFD && 'firm details', s.wantRI && 'registered individuals', s.wantID && 'individual categories & terms', s.wantLead && 'UDP and CCO'].filter(Boolean).join(', ')],
+      ['Firm size', '"Registered individuals" counts everyone listed at the firm in the provinces scanned. The dealing-rep count is filled in once every person at the firm has been read (full scan).'],
       ['Dates', 'NRD registration history starts Sep 28, 2009. A "*" date (flagged in Firm Registrations) means registered on or before that date.'],
       ['Note', 'The CSA presents registration information as a plain language summary of publicly available documents. Check the NRD record before relying on it.']];
   }
@@ -726,12 +860,17 @@
   }
   async function excel() {
     status('Building Excel file…');
-    const sheets = [{ name: 'Firms', rows: firmRows() }];
+    const sheets = [];
+    if (leadKnown() || R.reps.size) sheets.push({ name: 'Leadership & Size', rows: leadershipRows() });
+    if (leadership().size) sheets.push({ name: 'Leadership People', rows: leadershipPeopleRows() });
+    sheets.push({ name: 'Firms', rows: firmRows() });
     if (R.firms.some(f => f.parsed)) sheets.push({ name: 'Firm Registrations', rows: firmRegRows() });
     if (R.reps.size) sheets.push({ name: 'Individuals', rows: indivRows(false) });
-    if (R.indiv.size) sheets.push({ name: 'Dealing Reps', rows: indivRows(true) });
+    // Dealing-rep and people-level condition sheets are only complete after a full scan.
+    const full = R.settings.wantID && R.indiv.size;
+    if (full) sheets.push({ name: 'Dealing Reps', rows: indivRows(true) });
     if (R.firms.some(f => f.parsed)) sheets.push({ name: 'T&C Summary', rows: tcSummaryRows(), noFilter: true }, { name: 'Firms with T&C', rows: groupedRows('F') });
-    if (R.indiv.size) sheets.push({ name: 'People with T&C', rows: groupedRows('I') });
+    if (full) sheets.push({ name: 'People with T&C', rows: groupedRows('I') });
     if (R.firms.some(f => f.parsed)) sheets.push({ name: 'Terms & Conditions', rows: termsRows() });
     sheets.push({ name: 'About', rows: aboutRows() });
     save_(`nrd-${slug()}-${stamp()}.xlsx`, await xlsx(sheets));
@@ -848,8 +987,8 @@ draw();
     const a = e.target.closest('[data-a]'); if (!a) return;
     ({ hide: () => { box.style.display = 'none'; }, start: () => run(false), resume: () => run(true),
       stop: () => { S.stop = true; status('Stopping…'); },
-      tcscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-id', '#nrdx-oj'].forEach(id => { $(id).checked = true; $(id).disabled = false; });
-        $('#nrdx-max').value = 0; $('#nrdx-name').value = ''; run(false); },
+      tcscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-id', '#nrdx-ld', '#nrdx-oj'].forEach(id => { $(id).checked = true; $(id).disabled = false; }); run(false); },
+      leadscan: () => { ['#nrdx-fd', '#nrdx-ri', '#nrdx-ld', '#nrdx-oj'].forEach(id => { $(id).checked = true; }); $('#nrdx-id').checked = false; run(false); },
       report: () => openReport(false), savereport: () => openReport(true),
       xlsx: () => excel().catch(err => { status('Excel export failed: ' + err.message); log(err.stack || err.message); }),
       firms: () => csv(firmRows(), 'firms'), reps: () => csv(indivRows(false), 'individuals'),
