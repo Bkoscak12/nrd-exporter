@@ -100,12 +100,12 @@
     <div class="box" style="display:block;margin:0 0 10px">
       <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
       <div class="row"><button class="btn" data-a="sizescan">Firm size bands</button></div>
-      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 30 minutes (resumable).</div>
+      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 40 minutes (resumable).</div>
       <label style="margin:8px 0 0"><span class="lbl">Size bands (dealing reps)</span><input type="text" id="nrdx-bands"></label>
       <div class="note" id="nrdx-bandmsg" style="color:#b3261e;margin:0"></div>
       <div id="nrdx-bandtbl"></div>
       <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
-      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2–2½ hours (resumable).</div>
+      <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2½ hours (resumable).</div>
       <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
       <div class="note" style="margin-top:4px">Everything above plus exact dealing-rep counts and every condition. Reads everyone's record: roughly 4 hours for all EMDs (resumable).</div>
     </div>
@@ -119,7 +119,7 @@
     <label class="chk"><input type="checkbox" id="nrdx-ri" checked><span>Registered individuals at each firm</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-id" checked><span>Individual categories (needed to identify <b>Dealing Representatives</b>; slowest step)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-ld" checked><span>UDP and CCO at each firm</span></label>
-    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 30 minutes)</span></label>
+    <label class="chk"><input type="checkbox" id="nrdx-sz" checked><span>Dealing-rep count for every firm (fast count, about 40 minutes)</span></label>
     <label class="chk"><input type="checkbox" id="nrdx-oj" checked><span>Only provinces where the firm holds the selected category</span></label>
     <div class="box" id="nrdx-saved"></div>
     <div class="row">
@@ -309,7 +309,7 @@
       while (i < todo.length) {
         const start = todo[i++], r = await page(start, 2 + start / PAGE);
         await take(start, r.rows); done++;
-        status(`Searching every ${cat}: page ${done.toLocaleString()} of ${Math.ceil(total / PAGE).toLocaleString()}`);
+        if (!S.stop) status(`Searching every ${cat}: page ${done.toLocaleString()} of ${Math.ceil(total / PAGE).toLocaleString()}`);
       }
     };
     await Promise.all([worker(), worker()]);
