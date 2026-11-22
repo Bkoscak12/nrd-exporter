@@ -87,9 +87,19 @@
   #nrdx .box{background:#eef4fa;border:1px solid #c5d7e8;padding:7px 9px;border-radius:6px;font-size:12px;margin-top:8px;display:none}
   #nrdx .warn{background:#fff4e0;border-color:#f0c77a}
   #nrdx details{margin-top:8px;font-size:11.5px;color:#5c6b7a}
-  #nrdx #nrdx-bandtbl table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
-  #nrdx #nrdx-bandtbl td{padding:2px 6px;border-top:1px solid #e1e6ec}
-  #nrdx #nrdx-bandtbl td+td{text-align:right}
+  #nrdx .grp{background:#fff;border:1px solid #c5d7e8;border-radius:6px;padding:8px;margin-top:8px}
+  #nrdx .grp .gh,#nrdx .grp .gr{display:grid;grid-template-columns:58px 14px 58px 1fr 22px;gap:4px;align-items:center;font-size:12px}
+  #nrdx .grp .gh{color:#5c6b7a;font-weight:600;margin-bottom:3px}
+  #nrdx .grp .gr{margin-bottom:3px}
+  #nrdx .grp .gr input{width:100%;padding:3px 5px;border:1px solid #b8c3cf;border-radius:5px;font:inherit;background:#fffbe6;color:#1b2430}
+  #nrdx .grp .gr.bad input{border-color:#b3261e}
+  #nrdx .grp .cnt{text-align:right;white-space:nowrap}
+  #nrdx .grp .cnt a{color:#24405a;cursor:pointer;text-decoration:underline}
+  #nrdx .grp .x{border:0;background:none;color:#8a96a3;font-size:15px;cursor:pointer;padding:0}
+  #nrdx .grp .gt{display:flex;justify-content:space-between;border-top:1px solid #e1e6ec;margin-top:5px;padding-top:4px;font-size:12px}
+  #nrdx .grp .lnk{border:0;background:none;color:#24405a;font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:0;margin-right:12px}
+  #nrdx #nrdx-bandfirms{max-height:170px;overflow:auto;font-size:11.5px;margin-top:6px}
+  #nrdx #nrdx-bandfirms div{display:flex;justify-content:space-between;gap:8px;border-top:1px solid #eef1f4;padding:1px 0}
   #nrdx pre{white-space:pre-wrap;max-height:120px;overflow:auto;margin:4px 0 0;font-size:11px}`;
   const style = document.createElement('style'); style.textContent = css; document.head.appendChild(style);
 
@@ -100,10 +110,18 @@
     <div class="box" style="display:block;margin:0 0 10px">
       <b>Quick start</b> <span style="color:#5c6b7a">(uses the category, name, province and max-firm settings below)</span>
       <div class="row"><button class="btn" data-a="sizescan">Firm size bands</button></div>
-      <div class="note" style="margin-top:4px">How many dealing reps each firm has, grouped into the bands below. About 40 minutes (resumable).</div>
-      <label style="margin:8px 0 0"><span class="lbl">Size bands (dealing reps)</span><input type="text" id="nrdx-bands"></label>
-      <div class="note" id="nrdx-bandmsg" style="color:#b3261e;margin:0"></div>
-      <div id="nrdx-bandtbl"></div>
+      <div class="note" style="margin-top:4px">Counts every firm's dealing reps and sorts the firms into your size groups below. About 50 minutes (resumable).</div>
+      <div class="grp">
+        <div class="lbl" style="margin:0 0 2px">Your size groups (number of dealing reps)</div>
+        <div class="note" style="margin:0 0 6px">Type the range for each group. Leave <b>To</b> empty for "and up". Change them any time: the counts regroup instantly, no new scan.</div>
+        <div class="gh"><span>From</span><span></span><span>To</span><span style="text-align:right">Firms</span><span></span></div>
+        <div id="nrdx-bandrows"></div>
+        <div class="note" id="nrdx-bandmsg" style="color:#b3261e;margin:2px 0 0"></div>
+        <div class="gt" id="nrdx-bandtot"></div>
+        <div style="margin-top:6px"><button class="lnk" data-g="add">+ Add a group</button><button class="lnk" data-g="reset">Reset to default</button></div>
+        <div id="nrdx-bandfirms"></div>
+        <input type="hidden" id="nrdx-bands">
+      </div>
       <div class="row"><button class="btn" data-a="leadscan">UDP, CCO &amp; firm size</button></div>
       <div class="note" style="margin-top:4px">Every firm's UDP and CCO, plus firm sizes and bands. For all EMDs, roughly 2½ hours (resumable).</div>
       <div class="row"><button class="btn" data-a="tcscan">Full scan: dealing reps &amp; terms &amp; conditions</button></div>
@@ -757,31 +775,91 @@
     }
     return out;
   }
+  // Size Bands sheet: From/To cells the user can edit in Excel; counts and labels are formulas over Firm Sizes.
+  const BAND_ROWS = 20, SB = "'Size Bands'!", FS = "'Firm Sizes'!";
+  const bandFormula = cell => {
+    const A = `${SB}$A$2:$A$${BAND_ROWS + 1}`, B = `${SB}$B$2:$B$${BAND_ROWS + 1}`;
+    const hit = `SUMPRODUCT(MAX((${A}<>"")*(${A}<=${cell})*((${B}+(${B}="")*1E+9)>=${cell})*ROW(${A})))`;
+    return `IF(${cell}="","",IF(${hit}=0,"Not in any band",INDEX(${SB}$C:$C,${hit})))`;
+  };
+  // A Size band cell: live formula pointing at the Size Bands sheet, with today's answer cached.
+  const bandCell = (n, ref) => ({ f: bandFormula(ref), v: bandOf(n, bands()) });
   function sizeBandRows() {
-    const bs = bands(), t = sizeTable(), counts = new Map(bs.map(b => [b.label, { n: 0, other: 0 }]));
-    for (const f of R.firms) { const s = t.get(f.FirmId); if (!s) continue;
-      const c = counts.get(bandOf(s.n, bs)) || counts.set(bandOf(s.n, bs), { n: 0, other: 0 }).get(bandOf(s.n, bs));
-      c.n++; if (s.other.length) c.other++; }
-    const total = [...counts.values()].reduce((a, c) => a + c.n, 0);
-    return [['Size band (dealing reps)', `${R.settings.cat}s`, '% of firms', 'Of which also a mutual fund / investment dealer'],
-      ...[...counts].map(([label, c]) => [label, c.n, total ? Math.round(1000 * c.n / total) / 10 + '%' : '', c.other]),
-      ['Total', total, total ? '100%' : '', [...counts.values()].reduce((a, c) => a + c.other, 0)], [''],
-      ['Counts for firms that are also mutual fund or investment dealers include those reps. A full scan gives their exact EMD-only count.']];
+    const bs = bands(), t = sizeTable(), firms = R.firms.filter(f => t.has(f.FirmId)).map(f => t.get(f.FirmId));
+    const total = firms.length, rows = [['From (dealing reps)', 'To (empty = and up)', 'Size band', `${R.settings.cat}s`, '% of firms',
+      'Of which also a mutual fund / investment dealer']];
+    for (let i = 0; i < BAND_ROWS; i++) {
+      const r = i + 2, b = bs[i], inB = f => b && f.n >= b.lo && f.n <= b.hi, n = firms.filter(inB).length;
+      const cond = `${FS}$C:$C,">="&A${r},${FS}$C:$C,"<="&IF(B${r}="",1E+9,B${r})`;
+      rows.push([{ val: b ? b.lo : '', s: 5 }, { val: b && b.hi !== Infinity ? b.hi : '', s: 5 },
+        { f: `IF(A${r}="","",IF(B${r}="",A${r}&"+",IF(B${r}=A${r},A${r}&"",A${r}&"-"&B${r})))`, v: b ? b.label : '' },
+        { f: `IF(A${r}="","",COUNTIFS(${cond}))`, v: b ? n : '' },
+        { f: `IF(OR(A${r}="",$D$${BAND_ROWS + 2}=0),"",D${r}/$D$${BAND_ROWS + 2})`, v: b && total ? n / total : '', s: 4 },
+        { f: `IF(A${r}="","",COUNTIFS(${cond},${FS}$F:$F,"?*"))`, v: b ? firms.filter(f => inB(f) && f.other.length).length : '' }]);
+    }
+    const tr = BAND_ROWS + 2, gap = firms.filter(f => !bs.some(b => f.n >= b.lo && f.n <= b.hi)).length;
+    rows.push(['Total firms', '', '', { f: `COUNT(${FS}$C:$C)`, v: total }, { f: `IF(D${tr}=0,"",1)`, v: total ? 1 : '', s: 4 }, ''],
+      ['Not in any band', '', '', { f: `D${tr}-SUM(D2:D${tr - 1})`, v: gap }, '', ''], [''],
+      ['To change the groups, type new numbers in the yellow From and To cells (up to 20 groups, in any order).'],
+      ['The counts here and the Size band columns on Firm Sizes and Leadership & Size update automatically.'],
+      ['Counts for firms that are also mutual fund or investment dealers include those reps. A full scan gives their exact EMD-only count.']);
+    return rows;
   }
   function firmSizeRows() {
     const bs = bands(), t = sizeTable();
     const rows = R.firms.filter(f => t.has(f.FirmId)).map(f => { const s = t.get(f.FirmId);
-      return [num(f.NRDNumber), f.FirmName, s.n, bandOf(s.n, bs), s.how, s.other.join('; '), clean(f.Jurisdictions), { link: firmUrl(f.FirmId) }]; });
+      return [num(f.NRDNumber), f.FirmName, s.n, '', s.how, s.other.join('; '), clean(f.Jurisdictions), { link: firmUrl(f.FirmId) }]; });
     rows.sort((a, b) => b[2] - a[2] || a[1].localeCompare(b[1]));
+    rows.forEach((r, i) => { r[3] = bandCell(r[2], `C${i + 2}`); });
     return [['NRD #', 'Firm name', 'Dealing reps', 'Size band', 'How counted', 'Also registered as', 'Provinces registered', 'NRD record'], ...rows];
   }
-  // Small band table in the panel; redrawn when the bands change.
+  // ---------- size group editor (panel) ----------
+  // The groups are stored as text ("0, 1-3, 101+") in a hidden input and localStorage; the panel shows them as From/To rows.
+  const bandText = (lo, hi) => hi === '' ? `${lo}+` : +hi === +lo ? `${lo}` : `${lo}-${hi}`;
+  function drawBandRows() {
+    let bs; try { bs = parseBands($('#nrdx-bands').value); } catch { bs = parseBands(DEFAULT_BANDS); }
+    $('#nrdx-bandrows').innerHTML = bs.map(b => bandRowHtml(b.lo, b.hi === Infinity ? '' : b.hi)).join('');
+    renderBands();
+  }
+  const bandRowHtml = (lo, hi) => `<div class="gr"><input type="number" min="0" class="lo" value="${lo}"><span>to</span>` +
+    `<input type="number" min="0" class="hi" value="${hi}" placeholder="and up"><span class="cnt"></span><button class="x" data-g="del" title="Remove this group">×</button></div>`;
+  // Read the rows back into band text; returns an error message or ''.
+  function readBandRows() {
+    const parts = [];
+    let err = '';
+    for (const r of document.querySelectorAll('#nrdx-bandrows .gr')) {
+      const lo = r.querySelector('.lo').value.trim(), hi = r.querySelector('.hi').value.trim();
+      r.classList.remove('bad');
+      if (lo === '' && hi === '') continue;
+      if (lo === '' || (hi !== '' && +hi < +lo)) { r.classList.add('bad'); err = err || (lo === '' ? 'Each group needs a From number.' : `In ${lo} to ${hi}, To must be at least From.`); continue; }
+      parts.push(bandText(+lo, hi === '' ? '' : +hi));
+    }
+    if (err) return err;
+    try { parseBands(parts.join(', ')); } catch (e) { return e.message; }
+    $('#nrdx-bands').value = parts.join(', ');
+    try { localStorage.setItem('nrdx-bands', $('#nrdx-bands').value); } catch {}
+    return '';
+  }
+  let openBand = null;
   function renderBands() {
-    const el = $('#nrdx-bandtbl'), msg = $('#nrdx-bandmsg');
-    try { parseBands($('#nrdx-bands').value); msg.textContent = ''; } catch (e) { msg.textContent = e.message; }
-    if (!R || !sizeTable().size) { el.innerHTML = ''; return; }
-    const rows = sizeBandRows().slice(1, -2);
-    el.innerHTML = '<table>' + rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('') + '</table>';
+    const msg = $('#nrdx-bandmsg'), err = document.querySelector('#nrdx-bandrows .gr') ? readBandRows() : '';
+    msg.textContent = err;
+    const t = R ? sizeTable() : new Map(), have = t.size > 0, bs = bands();
+    const by = new Map(bs.map(b => [b.label, []]));
+    if (have) for (const f of R.firms) { const x = t.get(f.FirmId); if (!x) continue;
+      const k = bandOf(x.n, bs); (by.get(k) || by.set(k, []).get(k)).push({ name: f.FirmName, n: x.n }); }
+    const total = [...by.values()].reduce((a, l) => a + l.length, 0);
+    for (const r of document.querySelectorAll('#nrdx-bandrows .gr')) {
+      const lo = r.querySelector('.lo').value.trim(), hi = r.querySelector('.hi').value.trim(), cell = r.querySelector('.cnt');
+      const list = lo === '' || err ? null : by.get(bandText(+lo, hi === '' ? '' : +hi));
+      cell.innerHTML = !have ? '<span style="color:#8a96a3">–</span>' : list ? `<a data-band="${bandText(+lo, hi === '' ? '' : +hi)}">${list.length}</a> · ${total ? Math.round(1000 * list.length / total) / 10 : 0}%` : '';
+    }
+    const gap = (by.get('Not in any band') || []).length;
+    $('#nrdx-bandtot').innerHTML = !have ? '<span style="color:#5c6b7a">Counts appear here after you run <b>Firm size bands</b>.</span>'
+      : `<span>Total firms counted</span><b>${total}</b>` + (gap ? `</div><div class="gt" style="border:0;margin:0;color:#b3261e"><span>Not in any group (gap in your ranges)</span><a data-band="Not in any band">${gap}</a>` : '');
+    const lst = openBand && by.get(openBand);
+    $('#nrdx-bandfirms').innerHTML = !have || !lst ? '' : `<div style="border:0;font-weight:600"><span>${xesc(openBand)} dealing reps: ${lst.length} firms</span><span>Reps</span></div>` +
+      lst.sort((a, b) => b.n - a.n || a.name.localeCompare(b.name)).map(x => `<div><span>${xesc(x.name)}</span><span>${x.n}</span></div>`).join('');
   }
 
   // ---------- leadership & firm size ----------
@@ -837,7 +915,7 @@
         a.city || '', a.prov || '',
         s ? s.people : (R.settings.wantRI ? 0 : ''),
         // Exact (full scan) where available, otherwise the fast count.
-        st.has(f.FirmId) ? st.get(f.FirmId).n : '', st.has(f.FirmId) ? bandOf(st.get(f.FirmId).n, bs) : '', st.has(f.FirmId) ? st.get(f.FirmId).how : '',
+        st.has(f.FirmId) ? st.get(f.FirmId).n : '', st.has(f.FirmId) ? bandCell(st.get(f.FirmId).n, `G${rows.length + 1}`) : '', st.has(f.FirmId) ? st.get(f.FirmId).how : '',
         u.length ? u.map(p => p.name).join('; ') : none, u.map(p => p.provs.join(', ')).join(' | '),
         u.length && since(u[0]) ? { date: since(u[0]) } : '', u.length ? { link: indUrl(u[0].id) } : '',
         c.length ? c.map(p => p.name).join('; ') : none, c.map(p => p.provs.join(', ')).join(' | '),
@@ -936,6 +1014,9 @@
       if (ri === 0) return `<c r="${ref}" s="1" t="inlineStr"><is><t>${xesc(v)}</t></is></c>`;
       if (typeof v === 'number') return `<c r="${ref}"><v>${v}</v></c>`;
       if (typeof v === 'object' && v.date) return `<c r="${ref}" s="3"><v>${serial(v.date)}</v></c>`;
+      if (typeof v === 'object' && 'f' in v) { const st = v.s ? ` s="${v.s}"` : '';
+        return typeof v.v === 'number' ? `<c r="${ref}"${st}><f>${xesc(v.f)}</f><v>${v.v}</v></c>` : `<c r="${ref}"${st} t="str"><f>${xesc(v.f)}</f><v>${xesc(v.v == null ? '' : v.v)}</v></c>`; }
+      if (typeof v === 'object' && 'val' in v) return v.val === '' ? `<c r="${ref}" s="${v.s}"/>` : `<c r="${ref}" s="${v.s}"><v>${v.val}</v></c>`;
       if (typeof v === 'object' && v.link) return `<c r="${ref}" s="2" t="str"><f>HYPERLINK("${xesc(v.link)}","${xesc(v.label || 'Open')}")</f><v>${xesc(v.label || 'Open')}</v></c>`;
       return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xesc(String(v).slice(0, 32000))}</t></is></c>`;
     }).join('') + '</row>').join('');
@@ -954,16 +1035,17 @@
       { name: 'xl/workbook.xml', text: head + `<workbook xmlns="${NS}spreadsheetml/2006/main" xmlns:r="${NS}officeDocument/2006/relationships"><sheets>` +
         sheets.map((s, i) => `<sheet name="${xesc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + `</sheets><definedNames>` +
         sheets.map((s, i) => s.rows.length > 1 && !s.noFilter ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${xesc(s.name)}'!$A$1:$${colName(s.rows[0].length - 1)}$${s.rows.length}</definedName>` : '').join('') +
-        `</definedNames></workbook>` },
+        `</definedNames><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
       { name: 'xl/_rels/workbook.xml.rels', text: head + `<Relationships xmlns="${NS}package/2006/relationships">` +
         sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${NS}officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
         `<Relationship Id="rId${sheets.length + 1}" Type="${NS}officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
-      { name: 'xl/styles.xml', text: head + `<styleSheet xmlns="${NS}spreadsheetml/2006/main">` +
+      { name: 'xl/styles.xml', text: head + `<styleSheet xmlns="${NS}spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.0%"/></numFmts>` +
         `<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font></fonts>` +
-        `<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF24405A"/><bgColor indexed="64"/></patternFill></fill></fills>` +
+        `<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF24405A"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2B3"/><bgColor indexed="64"/></patternFill></fill></fills>` +
         `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-        `<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
-        `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>` +
+        `<cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
+        `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+        `<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/></cellXfs>` +
         `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>` },
       ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: sheetXml(s.rows, s.noFilter) })),
     ];
@@ -1110,11 +1192,22 @@ draw();
   });
   $('#nrdx-ri').addEventListener('change', e => { $('#nrdx-id').disabled = !e.target.checked; });
 
-  // Size bands: remembered in this browser; the panel table re-groups as you type.
+  // Size groups: remembered in this browser; the counts regroup as you type.
   try { $('#nrdx-bands').value = localStorage.getItem('nrdx-bands') || DEFAULT_BANDS; } catch { $('#nrdx-bands').value = DEFAULT_BANDS; }
-  $('#nrdx-bands').addEventListener('input', () => {
-    try { parseBands($('#nrdx-bands').value); localStorage.setItem('nrdx-bands', $('#nrdx-bands').value); } catch {}
-    renderBands();
+  drawBandRows();
+  $('#nrdx-bandrows').addEventListener('input', renderBands);
+  box.querySelector('.grp').addEventListener('click', e => {
+    const g = e.target.closest('[data-g]'), b = e.target.closest('[data-band]');
+    if (b) { openBand = openBand === b.dataset.band ? null : b.dataset.band; renderBands(); return; }
+    if (!g) return;
+    if (g.dataset.g === 'del') { g.closest('.gr').remove(); renderBands(); }
+    if (g.dataset.g === 'add') {
+      const his = [...document.querySelectorAll('#nrdx-bandrows .hi')].map(i => i.value.trim());
+      const lastHi = his.length ? his[his.length - 1] : '';
+      $('#nrdx-bandrows').insertAdjacentHTML('beforeend', bandRowHtml(lastHi === '' ? '' : +lastHi + 1, ''));
+      const ins = document.querySelectorAll('#nrdx-bandrows .gr:last-child input'); (ins[0].value ? ins[1] : ins[0]).focus(); renderBands();
+    }
+    if (g.dataset.g === 'reset') { $('#nrdx-bands').value = DEFAULT_BANDS; openBand = null; drawBandRows(); }
   });
 
   // Load the site's live category list for firms, then any saved run.
